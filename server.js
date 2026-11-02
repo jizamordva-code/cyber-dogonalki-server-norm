@@ -29,6 +29,13 @@ const server = http.createServer(async (req, res) => {
   res.end('Not found. Экспортируйте веб-версию Godot в server/public/');
 });
 
+server.on('upgrade', (req) => {
+    console.log('[WS UPGRADE IN]', {
+        url: req.url,
+        origin: req.headers.origin || 'none',
+        userAgent: req.headers['user-agent'] || 'none'
+    });
+});
 const wss = new WebSocketServer({ server, maxPayload: 4096 });
 wss.on('connection', (ws) => {
   ws.isAlive = true;
