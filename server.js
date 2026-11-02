@@ -38,6 +38,7 @@ server.on('upgrade', (req) => {
 });
 const wss = new WebSocketServer({ server, maxPayload: 4096 });
 wss.on('connection', (ws) => {
+  console.log('[WS CONNECTED]');
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
   const out = (obj) => { if (ws.readyState === 1) ws.send(JSON.stringify(obj)); };
