@@ -17,6 +17,12 @@ setInterval(() => core.tick(), CFG.TICK_MS);
 setInterval(() => core.cleanup(), 5000);
 
 const server = http.createServer(async (req, res) => {
+  if (req.url === '/health') {
+    console.log('[HTTP HEALTH IN]', {
+      method: req.method,
+      userAgent: req.headers['user-agent'] || 'none'
+    });
+  }
   try {
     if (req.url === '/health') { res.writeHead(200); return res.end('ok'); }
     if (req.url === '/api/stats') {
