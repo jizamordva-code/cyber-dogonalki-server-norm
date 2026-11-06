@@ -37,19 +37,19 @@ function createCore(opts = {}) {
   }
   function newSession(kind, mode, owner) {
     const s = {
-      id: crypto.randomBytes(4).toString('hex'), code: null, kind, mode, owner: kind === 'private' ? owner : null,
+      id: crypto.randomBytes(4).toString('hex'), code: uniqueCode(), kind, mode, owner: kind === 'private' ? owner : null,
       players: new Map(), bots: [], g: {}, state: mode === 'classic' ? 'running' : 'lobby',
       createdAt: nowFn(), emptySince: null, lobbyAt: null, startedAt: mode === 'classic' ? nowFn() : null, endedAt: null, lastTick: nowFn(),
     };
-    if (kind === 'private') s.code = uniqueCode();
     sessions.set(s.id, s);
     return s;
   }
   const minPlayers = (s) => (s.kind === 'private' ? CFG.MIN_PRIVATE : CFG.MIN_PUBLIC[s.mode]);
   const sessionInfo = (s) => ({ id: s.id, code: s.code, kind: s.kind, mode: s.mode, state: s.state });
 
+  // mode = null -> подойдёт комната любого режима (кнопка «ИГРАТЬ» берёт самую ближнюю)
   function joinable(s, mode) {
-    return s.kind === 'public' && s.mode === mode && s.state !== 'over' && s.players.size < CFG.MAX_PLAYERS;
+    return s.kind === 'public' && (!mode || s.mode === mode) && s.state !== 'over' && s.players.size < CFG.MAX_PLAYERS;
   }
   function findPublic(mode, lat, lon) {
     let best = null, bd = CFG.MATCH_RADIUS_KM * 1000;
@@ -254,9 +254,9 @@ function createCore(opts = {}) {
 
       case 'join_public': {
         if (!setPos(p, m)) return err(p, 'BAD_POS', 'GPS: некорректные координаты');
-        const mode = parseMode(m.mode);
+        const mode = MODES[m.mode] ? m.mode : null;           // без режима — ближайшая игра любого режима
         if (p.sid) leaveSession(p);
-        const s = findPublic(mode, p.lat, p.lon) || newSession('public', mode, null);
+        const s = findPublic(mode, p.lat, p.lon) || newSession('public', mode || 'classic', null);
         joinSession(p, s);
         break;
       }
@@ -281,7 +281,7 @@ function createCore(opts = {}) {
       case 'join_code': {
         if (!setPos(p, m)) return err(p, 'BAD_POS', 'GPS: некорректные координаты');
         const code = String(m.code || '').toUpperCase().trim();
-        const s = [...sessions.values()].find((x) => x.kind === 'private' && x.code === code);
+        const s = [...sessions.values()].find((x) => x.code === code);   // код есть у любой комнаты
         if (!s || s.state === 'over') return err(p, 'NOT_FOUND', 'СЕССИЯ С ТАКИМ КОДОМ НЕ НАЙДЕНА');
         if (s.players.size >= CFG.MAX_PLAYERS) return err(p, 'FULL', 'СЕССИЯ ЗАПОЛНЕНА');
         if (p.sid !== s.id) joinSession(p, s);
