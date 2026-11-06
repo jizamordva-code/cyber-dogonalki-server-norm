@@ -151,6 +151,31 @@ let ok = 0; const pass = (n) => { ok++; console.log('  ✔', n); };
   await tick(3);
   assert(last(L4, 'state').players.some((p) => p.bot)); pass('боты появляются в классике');
   core.handle(k, { t: 'stats' }); assert(Array.isArray(last(L4, 'stats').history)); pass('история матчей отдаётся по запросу stats');
+
+  console.log('5) КОД ЕСТЬ У ЛЮБОЙ КОМНАТЫ И «ИГРАТЬ» БЕРЁТ БЛИЖАЙШУЮ');
+  const L5 = [[], [], [], []];
+  const nearCtf = geo.dest(BASE.lat + 1.0, BASE.lon, 0, 1000);              // ~111 км от Амстердама -> отдельная зона
+  const o1 = mk('nearestAAAA', nearCtf.lat, nearCtf.lon, L5[0]);
+  core.handle(o1, { t: 'join_public', mode: 'ctf', lat: o1.lat, lon: o1.lon, acc: 5 });
+  const farTeam = geo.dest(nearCtf.lat, nearCtf.lon, 90, 60000);           // 60 км от первого, но другой режим
+  const o2 = mk('nearestBBBB', farTeam.lat, farTeam.lon, L5[1]);
+  core.handle(o2, { t: 'join_public', mode: 'team', lat: o2.lat, lon: o2.lon, acc: 5 });
+  const code1 = last(L5[0], 'joined').session.code;
+  assert(/^[A-Z0-9]{6}$/.test(code1)); pass('у публичной комнаты есть код: ' + code1);
+  const o3p = geo.dest(nearCtf.lat, nearCtf.lon, 90, 50000);               // ближе к team-комнате (10 км), чем к ctf (50 км)
+  const o3 = mk('nearestCCCC', o3p.lat, o3p.lon, L5[2]);
+  core.handle(o3, { t: 'join_public', lat: o3.lat, lon: o3.lon, acc: 5 });  // БЕЗ режима
+  assert.strictEqual(o3.sid, o2.sid); pass('«Играть» без выбора режима → ближайшая комната (team, 10 км), а не ctf (50 км)');
+  const o4 = mk('friendDDDDD', BASE.lat + 5, BASE.lon, L5[3]);
+  core.handle(o4, { t: 'join_code', code: code1, lat: o4.lat, lon: o4.lon, acc: 5 });
+  assert.strictEqual(o4.sid, o1.sid); pass('друг заходит в ОБЩУЮ комнату по коду');
+  assert(feeds(L5[0]).some((x) => x.includes('подключился к игре'))); pass('в логе: «подключился к игре»');
+  const nobody = mk('loneliestEEE', -33.86, 151.2, []);                    // Сидней: рядом нет игр → создаётся классика
+  core.handle(nobody, { t: 'join_public', lat: nobody.lat, lon: nobody.lon, acc: 5 });
+  assert.strictEqual([...core.sessions.values()].find((x) => x.id === nobody.sid).mode, 'classic'); pass('рядом никого нет → новая классическая игра с ботами');
+  core.handle(o4, { t: 'join_code', code: 'ZZZZZZ', lat: o4.lat, lon: o4.lon, acc: 5 });
+  assert.strictEqual(last(L5[3], 'error').code, 'NOT_FOUND'); pass('неверный код → NOT_FOUND');
+
   console.log(`\nГОТОВО: ${ok} проверок пройдено`);
   process.exit(0);
 })().catch((e) => { console.error('\n✖ ПРОВАЛ:', e.message); console.error(e.stack.split('\n').slice(0, 4).join('\n')); process.exit(1); });
