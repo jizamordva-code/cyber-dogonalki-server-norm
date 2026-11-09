@@ -176,6 +176,39 @@ let ok = 0; const pass = (n) => { ok++; console.log('  ✔', n); };
   core.handle(o4, { t: 'join_code', code: 'ZZZZZZ', lat: o4.lat, lon: o4.lon, acc: 5 });
   assert.strictEqual(last(L5[3], 'error').code, 'NOT_FOUND'); pass('неверный код → NOT_FOUND');
 
+
+  console.log('6) ПОКИНУТЫЕ СЕССИИ И РЕКЛАМА');
+  const store = require('../lib/store');
+  const L6 = [[], [], [], []];
+  const q = [0, 1, 2, 3].map((i) => mk('leaverplayr' + i, BASE.lat + 2 + i * 0.001, BASE.lon + 2, L6[i]));
+  core.handle(q[0], { t: 'create', kind: 'private', mode: 'ctf', lat: q[0].lat, lon: q[0].lon, acc: 5 });
+  const c6 = last(L6[0], 'joined').session.code;
+  for (let i = 1; i < 4; i++) core.handle(q[i], { t: 'join_code', code: c6, lat: q[i].lat, lon: q[i].lon, acc: 5 });
+  core.handle(q[0], { t: 'start' });
+  const s6 = [...core.sessions.values()].find((x) => x.code === c6);
+  assert.strictEqual(s6.state, 'running');
+  core.handle(q[1], { t: 'leave' });                                       // нажал крестик
+  assert.strictEqual(last(L6[1], 'match_end').result, 'left'); pass('крестик → запись «покинута»');
+  core.disconnect(q[2], q[2].out);                                         // просто закрыл приложение
+  T += 61000; core.cleanup();
+  const h2 = store.getHistory(q[2].id);
+  assert(h2.length && h2[0].result === 'left'); pass('закрыл приложение и не вернулся → «покинута» через минуту');
+  core.disconnect(q[3], q[3].out);                                         // отключился, но матч заканчивается раньше, чем истёк срок ожидания
+  s6.g.endsAt = T - 1; core.tick();
+  assert.strictEqual(s6.state, 'over');
+  const h3 = store.getHistory(q[3].id);
+  assert.strictEqual(h3[0].result, 'left'); pass('не заходил до конца матча → «покинута», а не поражение');
+  const w = last(L6[0], 'match_end'); assert(['win', 'loss', 'draw'].includes(w.result)); pass('игрок, дошедший до конца, получил обычный результат: ' + w.result);
+
+  const adp = mk('adviewerAAAA', BASE.lat - 3, BASE.lon, []);
+  assert(store.hasFree(adp.id)); store.useFree(adp.id); assert(!store.hasFree(adp.id)); pass('бесплатная сессия использована');
+  core.handle(adp, { t: 'ad_reward' });
+  assert(store.hasFree(adp.id)); pass('реклама просмотрена → ещё одна сессия');
+  store.useFree(adp.id); assert(!store.hasFree(adp.id));
+  core.handle(adp, { t: 'ad_reward' }); core.handle(adp, { t: 'ad_reward' }); store.useFree(adp.id); store.useFree(adp.id);
+  core.handle(adp, { t: 'ad_reward' });
+  assert(!store.hasFree(adp.id)); pass('лимит наград за рекламу: 3 в месяц');
+
   console.log(`\nГОТОВО: ${ok} проверок пройдено`);
   process.exit(0);
 })().catch((e) => { console.error('\n✖ ПРОВАЛ:', e.message); console.error(e.stack.split('\n').slice(0, 4).join('\n')); process.exit(1); });
