@@ -116,8 +116,9 @@ function createCore(opts = {}) {
     if (s.state === 'over') return;
     s.state = 'over'; s.endedAt = nowFn();
     for (const p of s.players.values()) {
-      const result = outcome.winner === 'draw' ? 'draw' : (p.team === outcome.winner ? 'win' : 'loss');
-      const base = result === 'win' ? CFG.POINTS.WIN : result === 'draw' ? CFG.POINTS.DRAW : CFG.POINTS.LOSS;
+      const gone = !online(p);                       // ушёл из игры и не вернулся до конца матча
+      const result = gone ? 'left' : outcome.winner === 'draw' ? 'draw' : (p.team === outcome.winner ? 'win' : 'loss');
+      const base = gone ? 0 : result === 'win' ? CFG.POINTS.WIN : result === 'draw' ? CFG.POINTS.DRAW : CFG.POINTS.LOSS;
       const e = entryFor(s, p, result, base + MODES[s.mode].personalPoints(p));
       store.addHistory(p.id, e);
       send(p, { t: 'match_end', ...e, winner: outcome.winner, summary: outcome.summary });
@@ -273,9 +274,10 @@ function createCore(opts = {}) {
         if (kind === 'public') {
           // одинаковые настройки рядом -> комнаты объединяются
           const ex = findPublic(mode, p.lat, p.lon);
-          if (ex) return joinSession(p, ex, { created: true, merged: true });
+          if (ex) { joinSession(p, ex, { created: true, merged: true }); return send(p, { t: 'free_update', free_available: store.hasFree(p.id) }); }
         }
         joinSession(p, newSession(kind, mode, p.id), { created: true });
+        send(p, { t: 'free_update', free_available: store.hasFree(p.id) });
         break;
       }
       case 'join_code': {
@@ -300,6 +302,11 @@ function createCore(opts = {}) {
         break;
       }
       case 'stats': send(p, { t: 'stats', history: store.getHistory(p.id) }); break;
+      case 'ad_reward': { // просмотрена реклама с наградой: +1 сессия (лимит в месяц)
+        const granted = store.grantExtra(p.id);
+        send(p, { t: 'free_update', free_available: store.hasFree(p.id), granted });
+        break;
+      }
       default: break;
     }
   }
