@@ -8,6 +8,7 @@ const http = require('http');
 const { WebSocketServer } = require('ws');
 const CFG = require('./lib/config');
 const { createCore } = require('./core');
+const store = require('./lib/store');
 const { serveStatic, warmCache } = require('./lib/static');
 
 const PORT = process.env.PORT || 10000;
@@ -27,7 +28,7 @@ const server = http.createServer(async (req, res) => {
     if (req.url === '/health') { res.writeHead(200); return res.end('ok'); }
     if (req.url === '/api/stats') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ name: 'cyber-chase', sessions: core.sessions.size, players: core.players.size }));
+      return res.end(JSON.stringify({ name: 'cyber-chase', sessions: core.sessions.size, players: core.players.size, persistence: store.persistence() }));
     }
     if (await serveStatic(req, res)) return;
   } catch (e) { console.error('http error', e); }
@@ -43,8 +44,10 @@ server.on('upgrade', (req) => {
     });
 });
 const wss = new WebSocketServer({ server, maxPayload: 4096 });
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
   console.log('[WS CONNECTED]');
+  // IP клиента (Render ставит заголовок X-Forwarded-For): нужен для лимита гостей сайта
+  const ip = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || (req.socket && req.socket.remoteAddress) || '';
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
   const out = (obj) => { if (ws.readyState === 1) ws.send(JSON.stringify(obj)); };
@@ -56,9 +59,10 @@ wss.on('connection', (ws) => {
     if (!m || typeof m.t !== 'string') return;
     try {
       if (m.t === 'hello') {
-        const r = core.hello(m, out, () => ws.terminate());
+        const r = core.hello(m, out, () => ws.terminate(), { ip });
         if (r.error) return out({ t: 'error', code: r.error[0], msg: r.error[1] });
         p = r.player;
+        console.log('[AUTH]', p.tg ? 'telegram' : (p.guest ? 'guest-site' : 'device'), p.platform || '-');
       } else if (p) core.handle(p, m);
       else out({ t: 'error', code: 'NO_HELLO', msg: 'Нет рукопожатия' });
     } catch (e) { console.error('handler error', e); out({ t: 'error', code: 'SERVER', msg: 'Внутренняя ошибка' }); }
@@ -70,4 +74,7 @@ setInterval(() => {
   wss.clients.forEach((ws) => { if (!ws.isAlive) return ws.terminate(); ws.isAlive = false; ws.ping(); });
 }, 25000);
 
-server.listen(PORT, () => { console.log(`КИБЕР_Догонялки server on :${PORT}`); warmCache(); });
+// сначала дожидаемся загрузки квот из хранилища, потом принимаем игроков
+store.ready.then(() => {
+  server.listen(PORT, () => { console.log(`КИБЕР_Догонялки server on :${PORT} · хранилище: ${store.persistence()}`); warmCache(); });
+});

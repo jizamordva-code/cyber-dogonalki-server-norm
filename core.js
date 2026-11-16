@@ -26,6 +26,8 @@ function createCore(opts = {}) {
   function feed(s, text, kind = 'info') { for (const p of s.players.values()) send(p, { t: 'feed', text, kind }); }
   function broadcast(s, msg) { for (const p of s.players.values()) send(p, msg); }
   const err = (p, code, msg) => send(p, { t: 'error', code, msg });
+  // Ключи, по которым считается «1 бесплатная сессия в месяц»: аккаунт (Telegram / устройство) и, для гостей сайта, IP.
+  const qkeys = (p) => (p.guest && p.ip ? [p.id, 'ip:' + p.ip] : [p.id]);
 
   // ───────── сессии ─────────
   function uniqueCode() {
@@ -212,12 +214,12 @@ function createCore(opts = {}) {
   }
 
   // ───────── подключение и сообщения ─────────
-  function hello(m, out, terminate) {
-    let id, nm = m.name;
+  function hello(m, out, terminate, meta = {}) {
+    let id, nm = m.name, isTg = false;
     if (typeof m.init_data === 'string' && m.init_data.length > 0) {
       const u = verifyInitData(m.init_data);
       if (!u) return { error: ['BAD_AUTH', 'ОШИБКА АВТОРИЗАЦИИ TELEGRAM'] };
-      id = 'tg' + u.id; nm = u.username || u.first_name || 'TG';
+      id = 'tg' + u.id; nm = u.username || u.first_name || 'TG'; isTg = true;
     } else {
       id = String(m.id || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
       if (id.length < 8 || /^tg/i.test(id)) return { error: ['BAD_ID', 'Некорректный идентификатор'] };
@@ -229,8 +231,15 @@ function createCore(opts = {}) {
       players.set(id, p);
     } else if (p.out && p.out !== out && p.terminate) { try { p.terminate(); } catch (_) { /* уже закрыт */ } }
     p.out = out; p.terminate = terminate || null; p.offlineSince = null;
+    // Откуда пришёл игрок. Гость сайта = браузер без подписи Telegram: у него нет аккаунта, id можно сбросить
+    // (очистка данных, режим инкогнито), поэтому его лимит дополнительно считается по IP-адресу.
+    p.tg = isTg;
+    p.platform = String(m.platform || '').toLowerCase().slice(0, 12);
+    p.ip = String(meta.ip || '').replace(/^::ffff:/, '').slice(0, 64);
+    p.guest = !isTg && p.platform === 'web';
     p.name = String(nm || 'RUNNER').replace(/[^\w\-А-Яа-яЁё ]/g, '').slice(0, 16) || 'RUNNER';
-    send(p, { t: 'welcome', id: p.id, free_available: store.hasFree(id), month: store.monthKey(), tg_app_link: process.env.TG_APP_LINK || '' });
+    send(p, { t: 'welcome', id: p.id, free_available: store.hasFree(qkeys(p)), month: store.monthKey(), tg_app_link: process.env.TG_APP_LINK || '',
+      auth: p.tg ? 'tg' : (p.guest ? 'guest' : 'device') });
     const s = p.sid && sessions.get(p.sid);
     if (m.resume && s) send(p, { t: 'joined', created: false, session: sessionInfo(s), you: { id: p.id, role: p.role, team: p.team, name: p.name } });
     else if (s) leaveSession(p);
@@ -263,21 +272,21 @@ function createCore(opts = {}) {
       }
       case 'create': {
         if (!setPos(p, m)) return err(p, 'BAD_POS', 'GPS: некорректные координаты');
-        if (!store.hasFree(p.id)) return err(p, 'LIMIT', 'БЕСПЛАТНАЯ СЕССИЯ ЭТОГО МЕСЯЦА УЖЕ ИСПОЛЬЗОВАНА');
+        if (!store.hasFree(qkeys(p))) return err(p, 'LIMIT', 'БЕСПЛАТНАЯ СЕССИЯ ЭТОГО МЕСЯЦА УЖЕ ИСПОЛЬЗОВАНА');
         // совместимость со старым клиентом: mode = public/private
         let kind = m.kind, mode = m.mode;
         if (m.mode === 'public' || m.mode === 'private') { kind = m.mode; mode = 'classic'; }
         kind = kind === 'private' ? 'private' : 'public';
         mode = parseMode(mode);
         if (p.sid) leaveSession(p);
-        store.useFree(p.id);
+        store.useFree(qkeys(p));
         if (kind === 'public') {
           // одинаковые настройки рядом -> комнаты объединяются
           const ex = findPublic(mode, p.lat, p.lon);
-          if (ex) { joinSession(p, ex, { created: true, merged: true }); return send(p, { t: 'free_update', free_available: store.hasFree(p.id) }); }
+          if (ex) { joinSession(p, ex, { created: true, merged: true }); return send(p, { t: 'free_update', free_available: store.hasFree(qkeys(p)) }); }
         }
         joinSession(p, newSession(kind, mode, p.id), { created: true });
-        send(p, { t: 'free_update', free_available: store.hasFree(p.id) });
+        send(p, { t: 'free_update', free_available: store.hasFree(qkeys(p)) });
         break;
       }
       case 'join_code': {
@@ -303,8 +312,8 @@ function createCore(opts = {}) {
       }
       case 'stats': send(p, { t: 'stats', history: store.getHistory(p.id) }); break;
       case 'ad_reward': { // просмотрена реклама с наградой: +1 сессия (лимит в месяц)
-        const granted = store.grantExtra(p.id);
-        send(p, { t: 'free_update', free_available: store.hasFree(p.id), granted });
+        const granted = p.guest ? false : store.grantExtra(p.id);
+        send(p, { t: 'free_update', free_available: store.hasFree(qkeys(p)), granted });
         break;
       }
       default: break;

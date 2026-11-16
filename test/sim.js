@@ -2,6 +2,7 @@
 // Прогон игровой логики без сети: node test/sim.js
 process.env.DATA_FILE = '/tmp/cc_test_data.json';
 process.env.TG_INSECURE = '0';
+process.env.BOT_TOKEN = '123:ABC';
 const assert = require('assert');
 const router = require('../lib/router');
 router.nearest = async () => { throw new Error('offline'); };   // без интернета
@@ -208,6 +209,54 @@ let ok = 0; const pass = (n) => { ok++; console.log('  ✔', n); };
   core.handle(adp, { t: 'ad_reward' }); core.handle(adp, { t: 'ad_reward' }); store.useFree(adp.id); store.useFree(adp.id);
   core.handle(adp, { t: 'ad_reward' });
   assert(!store.hasFree(adp.id)); pass('лимит наград за рекламу: 3 в месяц');
+
+
+  console.log('7) ЛИМИТ СЕССИЙ: САЙТ, TELEGRAM, ПРИЛОЖЕНИЕ');
+  const crypto = require('crypto');
+  const tgInit = (uid, name) => {
+    const q = new URLSearchParams();
+    q.set('user', JSON.stringify({ id: uid, first_name: name, username: name }));
+    q.set('auth_date', String(Math.floor(Date.now() / 1000)));   // срок подписи проверяется по реальным часам
+    const check = [...q.entries()].sort(([a], [b]) => (a < b ? -1 : 1)).map(([k, v]) => `${k}=${v}`).join('\n');
+    const secret = crypto.createHmac('sha256', 'WebAppData').update('123:ABC').digest();
+    q.set('hash', crypto.createHmac('sha256', secret).update(check).digest('hex'));
+    return q.toString();
+  };
+  const hello = (extra, ip) => {
+    const log = []; const r = core.hello({ t: 'hello', ...extra }, (m) => log.push(m), null, { ip });
+    assert(r.player, JSON.stringify(r.error)); const p = r.player;
+    core.handle(p, { t: 'pos', lat: BASE.lat - 8 + Math.random(), lon: BASE.lon, acc: 5 }); return { p, log };
+  };
+  const mkCreate = (x) => core.handle(x.p, { t: 'create', kind: 'private', mode: 'classic', lat: x.p.lat, lon: x.p.lon, acc: 5 });
+
+  const siteA = hello({ id: 'siteguestAAAA', platform: 'web' }, '203.0.113.7');
+  assert.strictEqual(last(siteA.log, 'welcome').auth, 'guest'); pass('сайт без Telegram распознан как «гость»');
+  mkCreate(siteA);
+  assert(last(siteA.log, 'joined')); pass('гость сайта создал первую сессию');
+  const siteB = hello({ id: 'siteguestBBBB', platform: 'web' }, '203.0.113.7');          // «инкогнито»: новый id, тот же IP
+  assert.strictEqual(last(siteB.log, 'welcome').free_available, false); pass('новый id с того же IP — бесплатной сессии уже нет');
+  mkCreate(siteB);
+  assert.strictEqual(last(siteB.log, 'error').code, 'LIMIT'); pass('«инкогнито»/очистка данных на сайте больше не даёт бесконечных сессий');
+  const siteC = hello({ id: 'siteguestCCCC', platform: 'web' }, '198.51.100.9');
+  mkCreate(siteC);
+  assert(last(siteC.log, 'joined')); pass('другой IP — отдельный лимит');
+  core.handle(siteC.p, { t: 'ad_reward' });
+  assert.strictEqual(last(siteC.log, 'free_update').granted, false); pass('гостям сайта награда за рекламу не выдаётся');
+
+  const tg1 = hello({ id: 'whatever1234', platform: 'web', init_data: tgInit(777001, 'Ivan') }, '203.0.113.7');   // тот же IP, что у гостя
+  assert.strictEqual(last(tg1.log, 'welcome').auth, 'tg'); assert.strictEqual(tg1.p.id, 'tg777001'); pass('Telegram: игрок опознан по подписи, id = tg777001');
+  assert.strictEqual(last(tg1.log, 'welcome').free_available, true); pass('аккаунт Telegram не страдает от IP-лимита гостей');
+  mkCreate(tg1);
+  assert(last(tg1.log, 'joined')); core.handle(tg1.p, { t: 'leave' });
+  mkCreate(tg1);
+  assert.strictEqual(last(tg1.log, 'error').code, 'LIMIT'); pass('Telegram: вторая бесплатная сессия в месяц запрещена');
+  const tg1b = hello({ id: 'otherdevice99', platform: 'web', init_data: tgInit(777001, 'Ivan') }, '192.0.2.50');     // другой телефон/браузер, тот же аккаунт
+  assert.strictEqual(last(tg1b.log, 'welcome').free_available, false); pass('тот же Telegram-аккаунт с другого устройства — тоже без новой сессии');
+  const forged = core.hello({ t: 'hello', init_data: tgInit(777001, 'Ivan').replace('777001', '888002') }, () => {}, null, {});
+  assert.strictEqual(forged.error[0], 'BAD_AUTH'); pass('поддельный Telegram-аккаунт отклонён');
+
+  const apk = hello({ id: 'androidphone01', platform: 'android' }, '203.0.113.7');                       // приложение: по-прежнему по id устройства
+  assert.strictEqual(last(apk.log, 'welcome').auth, 'device'); assert.strictEqual(last(apk.log, 'welcome').free_available, true); pass('Android-приложение: лимит по id устройства, IP не мешает');
 
   console.log(`\nГОТОВО: ${ok} проверок пройдено`);
   process.exit(0);
